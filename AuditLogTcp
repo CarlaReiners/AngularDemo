@@ -1,0 +1,142 @@
+package hm.edu.dako.auditLogServer;
+
+import hm.edu.dako.connection.tcp.TcpConnection;
+import hm.edu.dako.connection.tcp.TcpServerSocket;
+import hm.edu.dako.pdu.AuditLogPDU;
+import hm.edu.dako.pdu.AuditLogPduType;
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
+
+import java.io.IOException;
+
+/**
+ * Auditlog-Server auf Basis von TCP Sockets.
+ *
+ * @author Reiners Carla
+ */
+public class AuditLogTCPServer extends Thread {
+
+    private TcpServerSocket serverSocket;
+    private TcpConnection tcpConnection;
+    private boolean running;
+    private static final Logger log = LogManager.getLogger(AuditLogStarter.class);
+    private AuditLogWriter writerThread;
+    private static long totalReceivedPDU;
+
+
+    /**
+     * Instanz des TCP Servers {@link #AuditLogTCPServer} unter Nutzung des Konstruktors erzeugen.
+     *
+     * @param port Portnummer
+     * @param sendBufferSize Puffergroesse beim senden
+     * @param receiveBufferSize Puffergroesse beim empfangen
+     * @return Referenz auf erzeugte Instanz
+     * @throws Exception I/O Fehler
+     */
+    static AuditLogTCPServer getInstance(int port, int sendBufferSize, int receiveBufferSize) throws Exception {
+        return new AuditLogTCPServer(port, sendBufferSize, receiveBufferSize);
+    }
+
+    /**
+     * Anlegen des AuditLog Servers.
+     * Konstruktor und Erzeugung des Sockets.
+     *
+     * @param port Portnummer
+     * @param receiveBufferSize Puffergroesse beim empfangen
+     * @param sendBufferSize Puffergroesse beim senden
+     * @throws IOException I/O Fehler
+     */
+    private AuditLogTCPServer(int port, int sendBufferSize, int receiveBufferSize) throws IOException {
+        if (port <= 65535 && port >= 0) {// ueberpruefen ob ein gueltiger Port uebergeben wurde
+            serverSocket = new TcpServerSocket(port, sendBufferSize, receiveBufferSize); //Erzeugen eines Sockets
+        } else log.debug("Falscher Port gegeben");
+        setDaemon(true); //Einstellung fuer hintergrund Thread
+    }
+
+    /**
+     * Getter fuer {@link #totalReceivedPDU}.
+     *
+     * @return Anzahl der empfangenen PDU's
+     */
+    static long getTotalReceivedPDU() {
+        return totalReceivedPDU;
+    }
+
+    /**
+     * Baut Verbindung zum ChatServer auf
+     * und Bearbeitung aller vom Chat-Server ankommenden Nachrichten.
+     * schließt die Verbindung
+     */
+    public void run() {
+        waitForConnection();
+        running = true;
+        while (running) {
+            receive();
+        }
+        try {
+            close();
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
+    }
+
+    /**
+     * Auf Verbindungsaufbauwunsch eines Clients warten.
+     */
+    private void waitForConnection() {
+        try {
+            log.debug("Warte auf Verbindung");
+            tcpConnection = (TcpConnection) serverSocket.accept(); //Herstellen einer Verbindung
+            log.debug("Verbindung akzeptiert");
+            running = true;
+            if (writerThread == null) {
+                writerThread = new AuditLogWriter();
+                writerThread.logConnection(true);
+            }
+        } catch (IOException e) {
+            log.error("Verbindungsaufbau nicht moeglich");
+            running = false;
+        }
+    }
+
+    /**
+     * Nachricht vom Chatserver empfangen und an {@link hm.edu.dako.auditLogServer.AuditLogWriter#logPDU(AuditLogPDU)} weiterleiten.
+     */
+    private void receive() {
+        try {
+            AuditLogPDU receivedPdu = (AuditLogPDU) tcpConnection.receive(); //Empfange Pdu
+            log.debug(receivedPdu.getPduType() + "PDU empfangen");
+            totalReceivedPDU++;
+            writerThread.logPDU(receivedPdu);
+            if (receivedPdu.getPduType() == AuditLogPduType.FINISH_AUDIT_REQUEST) {
+                writerThread.logConnection(false);
+            }
+        } catch (Exception e) {
+            log.debug("Verbindung zum Server abgebrochen!");
+            waitForConnection();
+        }
+    }
+
+    /**
+     * Verbindung schliessen.
+     *
+     * @throws IOException Fehler beim schliessen
+     */
+    void close() throws IOException {
+        try {
+            running = false;
+            if (tcpConnection != null) {
+                log.debug("Verbindung wird geschlossen");
+                tcpConnection.close();
+            } else {
+                log.debug("Keine Verbindung zum schliessen");
+            }
+            if (writerThread != null) {
+                writerThread.calculateNumbersFromFile();
+            }
+        } catch (IOException e) {
+            log.debug("Exception beim close");
+            throw e;
+        }
+    }
+}
